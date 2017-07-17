@@ -2,6 +2,9 @@ const mongoose = require('mongoose');
 const validator = require('validator');
 const jwt = require('jsonwebtoken');
 const _ = require('lodash');
+const bcrypt = require('bcryptjs');
+
+console.log(process.env.JWT_SECRET);
 
 var UserSchema = new mongoose.Schema({
   email: {
@@ -18,7 +21,7 @@ var UserSchema = new mongoose.Schema({
   password: {
     type: String,
     required: true,
-    minlength: 4,
+    minlength: 4
   },
   tokens: [{
     access: {
@@ -38,13 +41,24 @@ UserSchema.methods.toJSON = function() {
   return _.pick(user, ['_id', 'email']);
 };
 
+UserSchema.methods.removeToken = function(token) {
+  var user = this;
+  return user.update({
+    $pull: {
+      tokens: {
+        token
+      }
+    }
+  });
+};
+
 UserSchema.methods.generateAuthToken = function() {
   var user = this;
   var access = 'auth';
   var token = jwt.sign({
     _id: user._id.toHexString(),
     access
-  }, 'abc123').toString();
+  }, process.env.JWT_SECRET).toString();
 
   user.tokens.push({
     access,
@@ -60,7 +74,7 @@ UserSchema.statics.findByToken = function(token) {
   var User = this;
   var decoded;
   try {
-    decoded = jwt.verify(token, 'abc123')
+    decoded = jwt.verify(token, process.env.JWT_SECRET);
   } catch (e) {
     return Promise.reject();
   }
@@ -69,6 +83,41 @@ UserSchema.statics.findByToken = function(token) {
     'tokens.token': token,
     'tokens.access': 'auth'
   });
+};
+
+UserSchema.pre('save', function(next) {
+  var user = this;
+  if (!user.isModified('password')) {
+    next();
+  } else {
+    bcrypt.genSalt(10, (err, salt) => {
+      bcrypt.hash(user.password, salt, (err, hash) => {
+        user.password = hash;
+        next();
+      });
+    });
+  }
+});
+
+UserSchema.statics.findByCredentials = function(email, password) {
+  var User = this;
+  return User.findOne({
+    email
+  }).then((user) => {
+    if (!user) {
+      return Promise.reject();
+    }
+
+    return new Promise((resolve, reject) => {
+      bcrypt.compare(password, user.password, (err, res) => {
+        if (res) {
+          resolve(user);
+        } else {
+          reject();
+        }
+      })
+    });
+  })
 };
 
 var User = mongoose.model('User', UserSchema);
